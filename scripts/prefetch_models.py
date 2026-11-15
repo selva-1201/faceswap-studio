@@ -34,6 +34,9 @@ MODEL_REGISTRY: dict[str, str] = {
     "yoloface.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/yoloface.onnx",
     "yolo_face.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/yolo_face.onnx",
     "retinaface.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/retinaface.onnx",
+    # Face Landmarkers & Recognizers
+    "2dfan4.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/2dfan4.onnx",
+    "arcface_w600k_r50.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/arcface_w600k_r50.onnx",
 }
 
 
@@ -104,6 +107,8 @@ def main() -> None:
         "codeformer.onnx",
         "yolo_face.onnx",
         "yoloface.onnx",
+        "2dfan4.onnx",
+        "arcface_w600k_r50.onnx",
     ]
 
     for model_name in essential_models:

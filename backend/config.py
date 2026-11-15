@@ -76,14 +76,14 @@ def get_facefusion_cmd() -> list[str]:
     """Locate FaceFusion executable or python script entrypoint."""
     entrypoint = FACEFUSION_DIR / "facefusion.py"
     if entrypoint.exists():
-        return ["python3", str(entrypoint)]
+        return ["python3", "-u", str(entrypoint)]
 
     system_cmd = shutil.which("facefusion")
     if system_cmd:
         return [system_cmd]
 
     # Fallback to python module execution or relative script
-    return ["python3", "facefusion.py"]
+    return ["python3", "-u", "facefusion.py"]
 
 
 def init_workspace() -> None:

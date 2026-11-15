@@ -1,11 +1,11 @@
 """Dual-GPU parallel runner for FaceSwap Studio.
 
-Spawns isolated worker processes via concurrent.futures.ProcessPoolExecutor(max_workers=2)
-binding GPU 0 to chunk0.mp4 and GPU 1 to chunk1.mp4 using CUDA_VISIBLE_DEVICES.
+Spawns isolated worker threads via concurrent.futures.ThreadPoolExecutor(max_workers=2)
+launching separate FaceFusion CLI processes pinned to GPU 0 and GPU 1 via CUDA_VISIBLE_DEVICES.
 Executes Pass 1 (Source Face A) and optional Pass 2 (Source Face B) in sequence per GPU.
 """
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Optional
 import logging
@@ -38,16 +38,18 @@ def _worker_gpu_task(
     enhancer_blend: int,
     detector_model: str,
     job_id: str,
+    log_callback: Optional[Callable[[str], None]] = None,
 ) -> dict[str, Any]:
-    """Isolated worker function executed inside a ProcessPoolExecutor worker process.
+    """Isolated worker task executed inside a ThreadPoolExecutor worker thread.
 
-    Pins the process to the specified GPU device via CUDA_VISIBLE_DEVICES,
-    executes subprocess inside cwd=FACEFUSION_DIR, runs Pass 1 for Source Face A,
-    and conditionally runs Pass 2 for Source Face B.
+    Pins the spawned subprocess to the specified GPU device via CUDA_VISIBLE_DEVICES,
+    executes inside cwd=FACEFUSION_DIR with unbuffered streams, runs Pass 1 for Face A,
+    and conditionally runs Pass 2 for Face B.
     """
-    # Enforce GPU isolation and PYTHONPATH for this worker process
+    # Enforce GPU isolation and unbuffered output for this worker subprocess
     worker_env = os.environ.copy()
     worker_env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    worker_env["PYTHONUNBUFFERED"] = "1"
     worker_env["PYTHONPATH"] = f"{str(FACEFUSION_DIR)}:{worker_env.get('PYTHONPATH', '')}"
 
     chunk_path = Path(chunk_path_str)
@@ -65,8 +67,32 @@ def _worker_gpu_task(
         entry = f"[{timestamp}] [GPU {gpu_id}] [{chunk_name}] {msg}"
         logs.append(entry)
         logger.info(entry)
+        if log_callback:
+            try:
+                log_callback(entry)
+            except Exception:
+                pass
 
     log(f"Worker initiated on GPU {gpu_id}. Starting Pass 1 for Source Face A.")
+
+    def run_proc(cmd: list[str], output_lines: list[str], prefix: str) -> int:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            cwd=str(FACEFUSION_DIR),
+            env=worker_env,
+        )
+        if proc.stdout:
+            for line in iter(proc.stdout.readline, ""):
+                cleaned = line.strip()
+                if cleaned:
+                    output_lines.append(cleaned)
+                    log(f"{prefix} {cleaned}")
+            proc.stdout.close()
+        return proc.wait()
 
     # 1. Build and run Pass 1 (Face A)
     cmd_pass1 = build_facefusion_command(
@@ -85,27 +111,11 @@ def _worker_gpu_task(
     log(f"Execution working directory: {FACEFUSION_DIR}")
 
     output_lines_pass1: list[str] = []
-    proc1 = subprocess.Popen(
-        cmd_pass1,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        cwd=str(FACEFUSION_DIR),
-        env=worker_env,
-    )
+    return_code1 = run_proc(cmd_pass1, output_lines_pass1, prefix="[FaceFusion]")
 
-    if proc1.stdout:
-        for line in proc1.stdout:
-            cleaned = line.strip()
-            if cleaned:
-                output_lines_pass1.append(cleaned)
-                log(f"[FaceFusion] {cleaned}")
-
-    proc1.wait()
-    if proc1.returncode != 0:
+    if return_code1 != 0:
         tail_err = "\n".join(output_lines_pass1[-10:]) if output_lines_pass1 else "No CLI output captured."
-        error_msg = f"Pass 1 on GPU {gpu_id} failed with exit code {proc1.returncode}: {tail_err}"
+        error_msg = f"Pass 1 on GPU {gpu_id} failed with exit code {return_code1}: {tail_err}"
         log(error_msg)
         return {
             "gpu_id": gpu_id,
@@ -149,27 +159,11 @@ def _worker_gpu_task(
         log(f"Pass 2 command: {' '.join(cmd_pass2)}")
 
         output_lines_pass2: list[str] = []
-        proc2 = subprocess.Popen(
-            cmd_pass2,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            cwd=str(FACEFUSION_DIR),
-            env=worker_env,
-        )
+        return_code2 = run_proc(cmd_pass2, output_lines_pass2, prefix="[FaceFusion Pass 2]")
 
-        if proc2.stdout:
-            for line in proc2.stdout:
-                cleaned = line.strip()
-                if cleaned:
-                    output_lines_pass2.append(cleaned)
-                    log(f"[FaceFusion Pass 2] {cleaned}")
-
-        proc2.wait()
-        if proc2.returncode != 0:
+        if return_code2 != 0:
             tail_err2 = "\n".join(output_lines_pass2[-10:]) if output_lines_pass2 else "No CLI output captured."
-            error_msg = f"Pass 2 on GPU {gpu_id} failed with exit code {proc2.returncode}: {tail_err2}"
+            error_msg = f"Pass 2 on GPU {gpu_id} failed with exit code {return_code2}: {tail_err2}"
             log(error_msg)
             return {
                 "gpu_id": gpu_id,
@@ -220,7 +214,8 @@ def execute_dual_gpu_pipeline(
     """Orchestrate dual-GPU parallel execution across GPU 0 and GPU 1.
 
     Runs chunk0.mp4 on GPU 0 and chunk1.mp4 on GPU 1 simultaneously using
-    concurrent.futures.ProcessPoolExecutor(max_workers=2).
+    concurrent.futures.ThreadPoolExecutor(max_workers=2). Spawns separate
+    subprocesses with CUDA_VISIBLE_DEVICES without unsafe process forking.
     """
     logger.info(
         f"Initiating dual-GPU parallel pipeline for job {job_id} on CUDA devices 0 and 1."
@@ -232,6 +227,10 @@ def execute_dual_gpu_pipeline(
             "gpu0": {"status": "processing", "progress": 10},
             "gpu1": {"status": "processing", "progress": 10},
         })
+
+    def on_worker_log(log_entry: str) -> None:
+        if progress_callback:
+            progress_callback({"logs": [log_entry]})
 
     tasks = [
         (
@@ -247,6 +246,7 @@ def execute_dual_gpu_pipeline(
             enhancer_blend,
             detector_model,
             job_id,
+            on_worker_log,
         ),
         (
             1,
@@ -261,12 +261,13 @@ def execute_dual_gpu_pipeline(
             enhancer_blend,
             detector_model,
             job_id,
+            on_worker_log,
         ),
     ]
 
     results: dict[int, dict[str, Any]] = {}
 
-    with ProcessPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         future_to_gpu = {
             executor.submit(_worker_gpu_task, *task): task[0]
             for task in tasks
