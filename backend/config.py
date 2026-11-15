@@ -87,3 +87,4 @@ def init_workspace() -> None:
     """Create all required workspace directories if they do not exist."""
     for directory in [WORKSPACE_DIR, UPLOADS_DIR, OUTPUTS_DIR, CHUNKS_DIR, JOBS_DIR, DEFAULT_ASSETS_MODELS_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
+

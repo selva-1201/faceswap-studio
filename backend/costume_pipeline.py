@@ -68,3 +68,4 @@ class CostumePipelineStub:
             f"Phase 2 costume pipeline stub invoked for {input_video_path.name} -> {output_video_path.name}"
         )
         return input_video_path
+

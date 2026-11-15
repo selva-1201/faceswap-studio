@@ -455,3 +455,4 @@ document.addEventListener("DOMContentLoaded", () => {
     gpu1Stage.textContent = "Failed";
   }
 });
+

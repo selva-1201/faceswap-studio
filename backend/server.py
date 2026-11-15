@@ -538,3 +538,4 @@ if frontend_dir.exists():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("backend.server:app", host=SERVER_HOST, port=SERVER_PORT, reload=False)
+

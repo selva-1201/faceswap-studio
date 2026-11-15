@@ -296,3 +296,4 @@ def execute_dual_gpu_pipeline(
     final_chunk1 = Path(results[1]["output_path"])
 
     return final_chunk0, final_chunk1
+
