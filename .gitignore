@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Kaggle / temporary workspace data
+workspace/
+uploads/
+outputs/
+chunks/
+jobs/
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.png
+*.jpg
+*.jpeg
+
+# Models cache & weights
+*.onnx
+*.pth
+*.pt
+*.bin
+.assets/models/
+models/
+
+# FaceFusion clone & logs
+facefusion/
+cloudflared
+*.log
+concat_list.txt
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
