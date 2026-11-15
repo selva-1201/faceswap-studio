@@ -86,17 +86,12 @@ fi
 log_info "Ensuring setuptools compatibility for PyTorch..."
 python3 -m pip install --no-cache-dir "setuptools<82" || true
 
-# Filter torch/onnxruntime from facefusion/requirements.txt to prevent OOM / reinstallation
-if [ -f "$FF_DIR/requirements.txt" ]; then
-    log_info "Filtering out torch/torchvision/torchaudio/onnxruntime from facefusion/requirements.txt..."
-    grep -v -i -E "^(torch|torchvision|torchaudio|onnxruntime)" "$FF_DIR/requirements.txt" > "$FF_DIR/requirements_filtered.txt"
-    log_info "Installing filtered FaceFusion dependencies..."
-    python3 -m pip install --no-cache-dir --no-warn-conflicts -r "$FF_DIR/requirements_filtered.txt" || true
-fi
-
-# Install GPU accelerated ONNX Runtime and FastAPI server dependencies
-log_info "Installing onnxruntime-gpu and FastAPI server packages..."
-python3 -m pip install --no-cache-dir --no-warn-conflicts \
+# Install GPU accelerated ONNX Runtime and server dependencies.
+# IMPORTANT: Never run 'pip install -r facefusion/requirements.txt' on Kaggle!
+# It attempts to uninstall Kaggle's pre-installed numpy and scipy to install conflicting versions,
+# which corrupts the running Python interpreter and immediately kills the Kaggle session container.
+log_info "Installing onnxruntime-gpu and server dependencies (preserving Kaggle system packages)..."
+python3 -m pip install --no-cache-dir --no-warn-conflicts --upgrade-strategy only-if-needed \
     onnxruntime-gpu \
     fastapi \
     uvicorn \
@@ -108,11 +103,10 @@ python3 -m pip install --no-cache-dir --no-warn-conflicts \
 # Check FaceFusion dependencies already present in Kaggle
 log_info "Verifying core runtime packages in Python..."
 python3 -c "
-import sys
-for pkg in ['torch', 'torchvision', 'onnxruntime', 'fastapi', 'uvicorn', 'requests', 'tqdm']:
+for pkg in ['torch', 'torchvision', 'numpy', 'scipy', 'cv2', 'PIL', 'onnx', 'onnxruntime', 'fastapi', 'uvicorn']:
     try:
         m = __import__(pkg)
-        v = getattr(m, '__version__', 'unknown')
+        v = getattr(m, '__version__', 'available')
         print(f'    [OK] {pkg}: {v}')
     except ImportError:
         print(f'    [Missing] {pkg}')
