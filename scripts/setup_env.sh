@@ -54,19 +54,21 @@ mkdir -p "$WORKSPACE/chunks"
 mkdir -p "$WORKSPACE/jobs"
 
 # 4. Install Python dependencies
-echo "[5/6] Installing Python packages (FastAPI, ONNX Runtime GPU, PyTorch)..."
-python3 -m pip install --quiet --upgrade pip setuptools wheel
-python3 -m pip install --quiet \
+echo "[5/6] Installing Python packages (FastAPI, ONNX Runtime GPU, PyTorch compatibility)..."
+# Kaggle torch 2.11.0 requires setuptools<82; ensure compatibility
+python3 -m pip install --quiet --no-cache-dir "setuptools<82" || true
+
+python3 -m pip install --quiet --no-warn-conflicts \
     fastapi \
     uvicorn \
     python-multipart \
     aiofiles \
     requests \
-    tqdm
+    tqdm || true
 
 # Install FaceFusion requirements if present
 if [ -f "$FF_DIR/requirements.txt" ]; then
-    python3 -m pip install --quiet -r "$FF_DIR/requirements.txt" || true
+    python3 -m pip install --quiet --no-warn-conflicts -r "$FF_DIR/requirements.txt" || true
 fi
 
 # 5. Download Cloudflare Quick Tunnel binary
@@ -83,3 +85,4 @@ fi
 echo "=================================================================="
 echo " FaceSwap Studio Environment Setup Finished Successfully."
 echo "=================================================================="
+
