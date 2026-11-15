@@ -3,13 +3,19 @@
 Handles FFmpeg chunk generation, FaceFusion CLI argument formatting for Pass 1 (Face A)
 and Pass 2 (Face B), chunk concatenation via concat demuxer, original audio restoration,
 and automatic workspace cleanup.
+Compatible with Python 3.10+.
 """
+
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Optional
 import json
 import logging
+import re
+import shutil
 import subprocess
+import threading
 
 from backend.config import (
     ALLOWED_DETECTOR_MODELS,
@@ -20,6 +26,8 @@ from backend.config import (
     DEFAULT_ENHANCER_BLEND,
     DEFAULT_ENHANCER_MODEL,
     DEFAULT_SWAPPER_MODEL,
+    FACEFUSION_DIR,
+    FACESWAP_THREADS,
     OUTPUTS_DIR,
     get_facefusion_cmd,
 )
@@ -30,6 +38,80 @@ logger = logging.getLogger("faceswap.pipeline")
 class PipelineError(Exception):
     """Exception raised for pipeline processing errors."""
     pass
+
+
+_HELP_CACHE_LOCK = threading.Lock()
+_FACEFUSION_HELP_INFO: Optional[dict[str, Any]] = None
+
+
+def get_facefusion_help_info() -> dict[str, Any]:
+    """Inspect and cache supported FaceFusion headless-run CLI flags and choices."""
+    global _FACEFUSION_HELP_INFO
+    with _HELP_CACHE_LOCK:
+        if _FACEFUSION_HELP_INFO is not None:
+            return _FACEFUSION_HELP_INFO
+
+        info: dict[str, Any] = {
+            "available": False,
+            "has_temp_frame_format": True,
+            "temp_frame_format_choice": "jpeg",
+            "has_video_memory_strategy": True,
+            "has_execution_thread_count": True,
+            "has_face_swapper_pixel_boost": True,
+            "raw_help": "",
+        }
+
+        entrypoint = FACEFUSION_DIR / "facefusion.py"
+        if not entrypoint.exists():
+            _FACEFUSION_HELP_INFO = info
+            return info
+
+        try:
+            cmd = get_facefusion_cmd() + ["headless-run", "--help"]
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(FACEFUSION_DIR),
+                timeout=15,
+            )
+            help_text = (res.stdout or "") + (res.stderr or "")
+            info["raw_help"] = help_text
+            info["available"] = res.returncode == 0 or len(help_text) > 100
+
+            info["has_temp_frame_format"] = "--temp-frame-format" in help_text
+            if info["has_temp_frame_format"]:
+                # Check whether choice is jpeg or jpg
+                match_tff = re.search(r"--temp-frame-format\s*\{([^}]+)\}", help_text)
+                if match_tff:
+                    choices = [c.strip() for c in match_tff.group(1).split(",")]
+                    if "jpeg" in choices:
+                        info["temp_frame_format_choice"] = "jpeg"
+                    elif "jpg" in choices:
+                        info["temp_frame_format_choice"] = "jpg"
+                    elif "png" in choices:
+                        info["temp_frame_format_choice"] = "png"
+                elif "jpeg" in help_text:
+                    info["temp_frame_format_choice"] = "jpeg"
+                elif "jpg" in help_text:
+                    info["temp_frame_format_choice"] = "jpg"
+
+            info["has_video_memory_strategy"] = "--video-memory-strategy" in help_text
+            info["has_execution_thread_count"] = "--execution-thread-count" in help_text
+            info["has_face_swapper_pixel_boost"] = "--face-swapper-pixel-boost" in help_text
+
+            logger.info(
+                f"FaceFusion CLI capabilities probed: temp_fmt={info['temp_frame_format_choice']} "
+                f"(supported={info['has_temp_frame_format']}), "
+                f"vmem_strategy={info['has_video_memory_strategy']}, "
+                f"threads={info['has_execution_thread_count']}, "
+                f"pixel_boost={info['has_face_swapper_pixel_boost']}"
+            )
+        except Exception as e:
+            logger.warning(f"Could not probe FaceFusion help text: {e}")
+
+        _FACEFUSION_HELP_INFO = info
+        return _FACEFUSION_HELP_INFO
 
 
 def probe_video(video_path: Path) -> dict[str, Any]:
@@ -109,8 +191,9 @@ def probe_video(video_path: Path) -> dict[str, Any]:
 def split_video_chunks(video_path: Path, job_id: str, duration: float) -> tuple[Path, Path]:
     """Split input video into two frame-accurate video-only chunks (chunk0.mp4, chunk1.mp4).
 
-    Re-encodes with -c:v libx264 -crf 16 -preset fast without audio to ensure
-    midpoint cuts fall exactly on keyframes and prevent freezing on concatenation.
+    Positions -ss and -to as output options (after -i) for frame-accurate seeking,
+    encodes with -c:v libx264 -crf 16 -preset fast -pix_fmt yuv420p -an,
+    and verifies that both generated chunks have > 0 frames.
     """
     job_chunks_dir = CHUNKS_DIR / job_id
     job_chunks_dir.mkdir(parents=True, exist_ok=True)
@@ -124,13 +207,14 @@ def split_video_chunks(video_path: Path, job_id: str, duration: float) -> tuple[
     cmd_chunk0 = [
         "ffmpeg",
         "-y",
+        "-i", str(video_path),
         "-ss", "0.0",
         "-to", f"{midpoint:.3f}",
-        "-i", str(video_path),
         "-an",
         "-c:v", "libx264",
         "-crf", "16",
         "-preset", "fast",
+        "-pix_fmt", "yuv420p",
         str(chunk0_path),
     ]
 
@@ -138,13 +222,14 @@ def split_video_chunks(video_path: Path, job_id: str, duration: float) -> tuple[
     cmd_chunk1 = [
         "ffmpeg",
         "-y",
+        "-i", str(video_path),
         "-ss", f"{midpoint:.3f}",
         "-to", f"{duration:.3f}",
-        "-i", str(video_path),
         "-an",
         "-c:v", "libx264",
         "-crf", "16",
         "-preset", "fast",
+        "-pix_fmt", "yuv420p",
         str(chunk1_path),
     ]
 
@@ -161,6 +246,15 @@ def split_video_chunks(video_path: Path, job_id: str, duration: float) -> tuple[
     if not chunk0_path.exists() or not chunk1_path.exists():
         raise PipelineError("One or both video chunks failed to write to disk.")
 
+    # Frame-accuracy verification: ensure both chunks have valid frames
+    meta0 = probe_video(chunk0_path)
+    meta1 = probe_video(chunk1_path)
+    if meta0["duration"] <= 0.0 or meta1["duration"] <= 0.0:
+        raise PipelineError("Generated chunk has 0 duration or unreadable frame count.")
+
+    logger.info(
+        f"Verified chunks for job {job_id}: chunk0={meta0['duration']:.2f}s, chunk1={meta1['duration']:.2f}s"
+    )
     return chunk0_path, chunk1_path
 
 
@@ -171,46 +265,72 @@ def build_facefusion_command(
     reference_position: int,
     reference_frame: int,
     swapper_model: str = DEFAULT_SWAPPER_MODEL,
-    enhancer_model: str = DEFAULT_ENHANCER_MODEL,
+    enhancer_model: Optional[str] = DEFAULT_ENHANCER_MODEL,
     enhancer_blend: int = DEFAULT_ENHANCER_BLEND,
     detector_model: str = DEFAULT_DETECTOR_MODEL,
-    execution_threads: int = 4,
+    execution_threads: Optional[int] = None,
+    video_memory_strategy: Optional[str] = "moderate",
+    temp_frame_format: Optional[str] = None,
 ) -> list[str]:
-    """Construct FaceFusion headless CLI command for a single pass.
+    """Construct FaceFusion headless CLI command.
 
-    Enforces allowlists, adds reference face selector parameters, and appends
-    --face-swapper-pixel-boost 512x512 when inswapper_128 is chosen.
+    Supports optional enhancer (omitted during Pass 2 if enhance_face_b is disabled),
+    enforces canonical model allowlists, and probes supported CLI flags.
     """
     if swapper_model not in ALLOWED_SWAPPER_MODELS:
         swapper_model = DEFAULT_SWAPPER_MODEL
-    if enhancer_model not in ALLOWED_ENHANCER_MODELS:
-        enhancer_model = DEFAULT_ENHANCER_MODEL
     if detector_model not in ALLOWED_DETECTOR_MODELS:
         detector_model = DEFAULT_DETECTOR_MODEL
 
+    help_info = get_facefusion_help_info()
+
+    # Determine processor list and enhancer parameters
+    if enhancer_model and enhancer_model in ALLOWED_ENHANCER_MODELS:
+        processors = ["face_swapper", "face_enhancer"]
+        has_enhancer = True
+    else:
+        processors = ["face_swapper"]
+        has_enhancer = False
+
     blend_clamped = max(40, min(100, int(enhancer_blend)))
-    detector_cli = "yolo_face" if detector_model in ("yolo_face", "yoloface") else detector_model
+    threads = execution_threads if execution_threads is not None else FACESWAP_THREADS
 
     cmd = get_facefusion_cmd() + [
         "headless-run",
         "-s", str(source_face_path),
         "-t", str(target_path),
         "-o", str(output_path),
-        "--processors", "face_swapper", "face_enhancer",
+        "--processors", *processors,
         "--face-swapper-model", swapper_model,
-        "--face-enhancer-model", enhancer_model,
-        "--face-enhancer-blend", str(blend_clamped),
-        "--face-detector-model", detector_cli,
+    ]
+
+    if has_enhancer and enhancer_model:
+        cmd.extend([
+            "--face-enhancer-model", enhancer_model,
+            "--face-enhancer-blend", str(blend_clamped),
+        ])
+
+    cmd.extend([
+        "--face-detector-model", detector_model,
         "--face-selector-mode", "reference",
         "--face-selector-order", "left-right",
         "--reference-face-position", str(reference_position),
         "--reference-frame-number", str(reference_frame),
         "--execution-providers", "cuda",
-        "--execution-thread-count", str(execution_threads),
-    ]
+    ])
 
-    # Pixel boost requirement for inswapper_128
-    if swapper_model == "inswapper_128":
+    if help_info.get("has_execution_thread_count", True):
+        cmd.extend(["--execution-thread-count", str(threads)])
+
+    if help_info.get("has_video_memory_strategy", True) and video_memory_strategy:
+        cmd.extend(["--video-memory-strategy", str(video_memory_strategy)])
+
+    if help_info.get("has_temp_frame_format", True):
+        tff = temp_frame_format or help_info.get("temp_frame_format_choice", "jpeg")
+        cmd.extend(["--temp-frame-format", str(tff)])
+
+    # Pixel boost for inswapper_128 if supported
+    if swapper_model == "inswapper_128" and help_info.get("has_face_swapper_pixel_boost", True):
         cmd.extend(["--face-swapper-pixel-boost", "512x512"])
 
     return cmd
@@ -275,6 +395,8 @@ def cleanup_job_chunks(job_id: str) -> None:
         for item in job_chunks_dir.iterdir():
             if item.is_file():
                 item.unlink(missing_ok=True)
+            elif item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
         job_chunks_dir.rmdir()
         logger.info(f"Cleaned up temporary chunk directory for job {job_id}")
     except Exception as e:

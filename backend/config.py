@@ -1,40 +1,49 @@
 """Configuration and runtime constants for FaceSwap Studio.
 
 Defines model allowlists, default parameters, directory paths, and FaceFusion CLI options.
+Compatible with Python 3.10+.
 """
+
+from __future__ import annotations
 
 from pathlib import Path
 import os
 import shutil
 
 # Model allowlists
-ALLOWED_SWAPPER_MODELS = [
+ALLOWED_SWAPPER_MODELS: list[str] = [
     "hyperswap_1c_256",
     "hyperswap_1a_256",
     "inswapper_128",
 ]
 
-ALLOWED_ENHANCER_MODELS = [
+ALLOWED_ENHANCER_MODELS: list[str] = [
     "codeformer",
     "gfpgan_1.4",
     "gpen_bfr_512",
 ]
 
-ALLOWED_DETECTOR_MODELS = [
+# Canonical detector names: "yolo_face" (not "yoloface" or "many")
+ALLOWED_DETECTOR_MODELS: list[str] = [
     "yolo_face",
-    "yoloface",
     "retinaface",
     "scrfd",
     "yunet",
 ]
 
 # Default values
-DEFAULT_SWAPPER_MODEL = "hyperswap_1c_256"
-DEFAULT_ENHANCER_MODEL = "codeformer"
-DEFAULT_DETECTOR_MODEL = "yolo_face"
-DEFAULT_ENHANCER_BLEND = 80
-MIN_ENHANCER_BLEND = 40
-MAX_ENHANCER_BLEND = 100
+DEFAULT_SWAPPER_MODEL: str = "hyperswap_1c_256"
+DEFAULT_ENHANCER_MODEL: str = "codeformer"
+DEFAULT_DETECTOR_MODEL: str = "yolo_face"
+DEFAULT_ENHANCER_BLEND: int = 80
+MIN_ENHANCER_BLEND: int = 40
+MAX_ENHANCER_BLEND: int = 100
+
+# Performance, size, and timeout limits (driven by environment variables)
+# Cloudflare Quick Tunnel rejects requests > 100MB; default cap is 95MB
+MAX_UPLOAD_MB: int = int(os.getenv("FACESWAP_MAX_UPLOAD_MB", "95"))
+FACESWAP_THREADS: int = int(os.getenv("FACESWAP_THREADS", "2"))
+PASS_TIMEOUT_SECONDS: int = int(os.getenv("FACESWAP_PASS_TIMEOUT_SECONDS", "10800"))
 
 # Base workspace resolution
 # Priority: /kaggle/working if present, otherwise local workspace directory
@@ -71,23 +80,22 @@ else:
 SERVER_HOST = os.getenv("FACESWAP_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("FACESWAP_PORT", "7860"))
 
-# FaceFusion CLI execution binary / script path
+
 def get_facefusion_cmd() -> list[str]:
     """Locate FaceFusion executable or python script entrypoint."""
     entrypoint = FACEFUSION_DIR / "facefusion.py"
     if entrypoint.exists():
-        return ["python3", "-u", str(entrypoint)]
+        return ["python3", str(entrypoint)]
 
     system_cmd = shutil.which("facefusion")
     if system_cmd:
         return [system_cmd]
 
-    # Fallback to python module execution or relative script
-    return ["python3", "-u", "facefusion.py"]
+    # Fallback to python script relative path
+    return ["python3", "facefusion.py"]
 
 
 def init_workspace() -> None:
     """Create all required workspace directories if they do not exist."""
     for directory in [WORKSPACE_DIR, UPLOADS_DIR, OUTPUTS_DIR, CHUNKS_DIR, JOBS_DIR, DEFAULT_ASSETS_MODELS_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
-

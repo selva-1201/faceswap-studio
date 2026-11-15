@@ -2,12 +2,18 @@
 
 Checks for read-only Kaggle model cache in /kaggle/input/ff-models-cache and creates
 symlinks into <facefusion_dir>/.assets/models (e.g. /kaggle/working/facefusion/.assets/models).
-If cache is not present, downloads essential ONNX weights directly from FaceFusion releases.
+Verifies model URLs with HTTP HEAD requests, pre-downloads available models, and falls
+back to FaceFusion's built-in automatic on-demand model downloader for any unresolved assets.
+Compatible with Python 3.10+.
 """
+
+from __future__ import annotations
 
 from pathlib import Path
 import os
+import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 # Base paths
@@ -21,7 +27,7 @@ FF_DIR = WORKSPACE / "facefusion"
 TARGET_MODELS_DIR = FF_DIR / ".assets" / "models"
 KAGGLE_CACHE_DIR = Path("/kaggle/input/ff-models-cache")
 
-# Official model URLs for FaceFusion v3 assets
+# Official model URLs for FaceFusion v3 assets (release tag models-3.0.0)
 MODEL_REGISTRY: dict[str, str] = {
     # Face Swappers
     "hyperswap_1c_256.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/hyperswap_1c_256.onnx",
@@ -30,13 +36,12 @@ MODEL_REGISTRY: dict[str, str] = {
     # Face Enhancers
     "codeformer.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/codeformer.onnx",
     "gfpgan_1.4.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx",
-    # Face Detectors
-    "yoloface.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/yoloface.onnx",
+    "gpen_bfr_512.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gpen_bfr_512.onnx",
+    # Face Detectors (Canonical: yolo_face.onnx)
     "yolo_face.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/yolo_face.onnx",
     "retinaface.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/retinaface.onnx",
-    # Face Landmarkers & Recognizers
-    "2dfan4.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/2dfan4.onnx",
-    "arcface_w600k_r50.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/arcface_w600k_r50.onnx",
+    "scrfd.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/scrfd.onnx",
+    "yunet.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/yunet.onnx",
 }
 
 
@@ -60,6 +65,17 @@ def link_from_cache(cache_dir: Path, target_dir: Path) -> int:
     return linked
 
 
+def check_url_resolves(url: str) -> bool:
+    """Verify that a remote model asset URL exists and responds with 200/302."""
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        req.add_header("User-Agent", "Mozilla/5.0")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status in (200, 301, 302)
+    except Exception:
+        return False
+
+
 def download_model(url: str, dest_path: Path) -> bool:
     """Download a model file with progress feedback."""
     print(f"[Download] Fetching {dest_path.name} from {url}")
@@ -71,7 +87,19 @@ def download_model(url: str, dest_path: Path) -> bool:
                 sys.stdout.write(f"\r  Progress: {percent:.1f}% ({blocks_transferred * block_size // 1024} KB)")
                 sys.stdout.flush()
 
-        urllib.request.urlretrieve(url, temp_path, reporthook=progress_bar)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp, open(temp_path, "wb") as out:
+            total_size = int(resp.headers.get("content-length", 0))
+            blocks = 0
+            block_size = 64 * 1024
+            while True:
+                buf = resp.read(block_size)
+                if not buf:
+                    break
+                out.write(buf)
+                blocks += 1
+                progress_bar(blocks, block_size, total_size)
+
         print()
         temp_path.replace(dest_path)
         print(f"  [Success] Saved to {dest_path}")
@@ -81,6 +109,28 @@ def download_model(url: str, dest_path: Path) -> bool:
         if temp_path.exists():
             temp_path.unlink()
         return False
+
+
+def run_facefusion_force_download() -> bool:
+    """Check if facefusion force-download command exists and run it."""
+    entrypoint = FF_DIR / "facefusion.py"
+    if not entrypoint.exists():
+        return False
+    try:
+        res = subprocess.run(
+            ["python3", str(entrypoint), "force-download", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=str(FF_DIR),
+            timeout=10,
+        )
+        if res.returncode == 0:
+            print("[Prefetch] Running FaceFusion force-download...")
+            subprocess.run(["python3", str(entrypoint), "force-download"], cwd=str(FF_DIR), check=True)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def main() -> None:
@@ -93,22 +143,16 @@ def main() -> None:
     # 1. Check if Kaggle read-only cache exists
     if KAGGLE_CACHE_DIR.exists():
         count = link_from_cache(KAGGLE_CACHE_DIR, TARGET_MODELS_DIR)
-        print(f"[Prefetch] Successfully linked {count} model files from Kaggle cache.")
+        print(f"[Prefetch] Linked {count} model files from Kaggle cache.")
         if count > 0:
             print("Model prefetch completed via Kaggle dataset.")
-            return
 
-    print("[Prefetch] Kaggle read-only cache not found or empty.")
-    print("[Prefetch] Checking local presence of essential models...")
-
-    # 2. Check and download essential default models
+    # 2. Check essential models
     essential_models = [
         "hyperswap_1c_256.onnx",
         "codeformer.onnx",
         "yolo_face.onnx",
-        "yoloface.onnx",
-        "2dfan4.onnx",
-        "arcface_w600k_r50.onnx",
+        "retinaface.onnx",
     ]
 
     for model_name in essential_models:
@@ -118,16 +162,25 @@ def main() -> None:
         else:
             url = MODEL_REGISTRY.get(model_name)
             if url:
-                download_model(url, model_path)
+                if check_url_resolves(url):
+                    download_model(url, model_path)
+                else:
+                    print(
+                        f"  [Notice] Asset URL for {model_name} did not resolve (404/network). "
+                        f"FaceFusion will auto-download {model_name} on first execution."
+                    )
 
-    # Ensure alias symlink exists between yoloface.onnx and yolo_face.onnx
+    # Maintain backwards compatibility symlink for yoloface.onnx <-> yolo_face.onnx
     yoloface_file = TARGET_MODELS_DIR / "yoloface.onnx"
     yolo_face_file = TARGET_MODELS_DIR / "yolo_face.onnx"
-    if yoloface_file.exists() and not yolo_face_file.exists():
+    if yolo_face_file.exists() and not yoloface_file.exists():
         try:
-            os.symlink("yoloface.onnx", yolo_face_file)
+            os.symlink("yolo_face.onnx", yoloface_file)
         except Exception:
             pass
+
+    # Optional: check if facefusion has a force-download command
+    run_facefusion_force_download()
 
     print("==================================================================")
     print(" Model prefetch stage completed.")
@@ -136,4 +189,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
