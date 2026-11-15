@@ -18,6 +18,7 @@ from backend.config import (
     DEFAULT_ENHANCER_BLEND,
     DEFAULT_ENHANCER_MODEL,
     DEFAULT_SWAPPER_MODEL,
+    FACEFUSION_DIR,
 )
 from backend.swap_pipeline import build_facefusion_command
 
@@ -41,10 +42,13 @@ def _worker_gpu_task(
     """Isolated worker function executed inside a ProcessPoolExecutor worker process.
 
     Pins the process to the specified GPU device via CUDA_VISIBLE_DEVICES,
-    runs Pass 1 for Source Face A, and conditionally runs Pass 2 for Source Face B.
+    executes subprocess inside cwd=FACEFUSION_DIR, runs Pass 1 for Source Face A,
+    and conditionally runs Pass 2 for Source Face B.
     """
-    # Enforce GPU isolation for this worker process
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    # Enforce GPU isolation and PYTHONPATH for this worker process
+    worker_env = os.environ.copy()
+    worker_env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    worker_env["PYTHONPATH"] = f"{str(FACEFUSION_DIR)}:{worker_env.get('PYTHONPATH', '')}"
 
     chunk_path = Path(chunk_path_str)
     source_a = Path(source_face_a_str)
@@ -78,24 +82,30 @@ def _worker_gpu_task(
     )
 
     log(f"Pass 1 command: {' '.join(cmd_pass1)}")
+    log(f"Execution working directory: {FACEFUSION_DIR}")
 
+    output_lines_pass1: list[str] = []
     proc1 = subprocess.Popen(
         cmd_pass1,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        cwd=str(FACEFUSION_DIR),
+        env=worker_env,
     )
 
     if proc1.stdout:
         for line in proc1.stdout:
             cleaned = line.strip()
             if cleaned:
+                output_lines_pass1.append(cleaned)
                 log(f"[FaceFusion] {cleaned}")
 
     proc1.wait()
     if proc1.returncode != 0:
-        error_msg = f"Pass 1 on GPU {gpu_id} failed with exit code {proc1.returncode}"
+        tail_err = "\n".join(output_lines_pass1[-10:]) if output_lines_pass1 else "No CLI output captured."
+        error_msg = f"Pass 1 on GPU {gpu_id} failed with exit code {proc1.returncode}: {tail_err}"
         log(error_msg)
         return {
             "gpu_id": gpu_id,
@@ -138,23 +148,28 @@ def _worker_gpu_task(
 
         log(f"Pass 2 command: {' '.join(cmd_pass2)}")
 
+        output_lines_pass2: list[str] = []
         proc2 = subprocess.Popen(
             cmd_pass2,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            cwd=str(FACEFUSION_DIR),
+            env=worker_env,
         )
 
         if proc2.stdout:
             for line in proc2.stdout:
                 cleaned = line.strip()
                 if cleaned:
+                    output_lines_pass2.append(cleaned)
                     log(f"[FaceFusion Pass 2] {cleaned}")
 
         proc2.wait()
         if proc2.returncode != 0:
-            error_msg = f"Pass 2 on GPU {gpu_id} failed with exit code {proc2.returncode}"
+            tail_err2 = "\n".join(output_lines_pass2[-10:]) if output_lines_pass2 else "No CLI output captured."
+            error_msg = f"Pass 2 on GPU {gpu_id} failed with exit code {proc2.returncode}: {tail_err2}"
             log(error_msg)
             return {
                 "gpu_id": gpu_id,
@@ -272,7 +287,8 @@ def execute_dual_gpu_pipeline(
                             "progress": 100 if res.get("success") else 0,
                             "output": res.get("output_path"),
                             "error": res.get("error"),
-                        }
+                        },
+                        "logs": res.get("logs", []),
                     })
 
             except Exception as e:

@@ -31,6 +31,7 @@ MODEL_REGISTRY: dict[str, str] = {
     "codeformer.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/codeformer.onnx",
     "gfpgan_1.4.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx",
     # Face Detectors
+    "yoloface.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/yoloface.onnx",
     "yolo_face.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/yolo_face.onnx",
     "retinaface.onnx": "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/retinaface.onnx",
 }
@@ -101,7 +102,7 @@ def main() -> None:
     essential_models = [
         "hyperswap_1c_256.onnx",
         "codeformer.onnx",
-        "yolo_face.onnx",
+        "yoloface.onnx",
     ]
 
     for model_name in essential_models:
@@ -112,6 +113,15 @@ def main() -> None:
             url = MODEL_REGISTRY.get(model_name)
             if url:
                 download_model(url, model_path)
+
+    # Ensure alias symlink exists between yoloface.onnx and yolo_face.onnx
+    yoloface_file = TARGET_MODELS_DIR / "yoloface.onnx"
+    yolo_face_file = TARGET_MODELS_DIR / "yolo_face.onnx"
+    if yoloface_file.exists() and not yolo_face_file.exists():
+        try:
+            os.symlink("yoloface.onnx", yolo_face_file)
+        except Exception:
+            pass
 
     print("==================================================================")
     print(" Model prefetch stage completed.")

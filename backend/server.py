@@ -226,6 +226,10 @@ def _run_background_pipeline(job_id: str) -> None:
                 job.gpu_status["gpu0"].update(update["gpu0"])
             if "gpu1" in update:
                 job.gpu_status["gpu1"].update(update["gpu1"])
+            if "logs" in update:
+                for line in update["logs"]:
+                    if line not in job.logs:
+                        job.logs.append(line)
             _save_jobs_to_disk()
 
         chunk0_done, chunk1_done = execute_dual_gpu_pipeline(

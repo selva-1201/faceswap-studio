@@ -189,6 +189,7 @@ def build_facefusion_command(
         detector_model = DEFAULT_DETECTOR_MODEL
 
     blend_clamped = max(40, min(100, int(enhancer_blend)))
+    detector_cli = "yoloface" if detector_model in ("yolo_face", "yoloface") else detector_model
 
     cmd = get_facefusion_cmd() + [
         "headless-run",
@@ -199,7 +200,7 @@ def build_facefusion_command(
         "--face-swapper-model", swapper_model,
         "--face-enhancer-model", enhancer_model,
         "--face-enhancer-blend", str(blend_clamped),
-        "--face-detector-model", detector_model,
+        "--face-detector-model", detector_cli,
         "--face-selector-mode", "reference",
         "--face-selector-order", "left-right",
         "--reference-face-position", str(reference_position),

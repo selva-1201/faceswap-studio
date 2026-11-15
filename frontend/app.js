@@ -152,6 +152,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const swapper = swapperSelect.value;
     const enhancer = enhancerSelect.value;
     const detector = detectorSelect.value;
+    const detectorCli = detector === "yolo_face" ? "yoloface" : detector;
     const blend = blendSlider.value;
     const posA = posAInput.value;
     const posB = posBInput.value;
@@ -173,7 +174,7 @@ document.addEventListener("DOMContentLoaded", () => {
       `  --face-swapper-model ${swapper}${boostFlag} \\\n` +
       `  --face-enhancer-model ${enhancer} \\\n` +
       `  --face-enhancer-blend ${blend} \\\n` +
-      `  --face-detector-model ${detector} \\\n` +
+      `  --face-detector-model ${detectorCli} \\\n` +
       `  --face-selector-mode reference \\\n` +
       `  --face-selector-order left-right \\\n` +
       `  --reference-face-position ${posA} \\\n` +
@@ -193,7 +194,7 @@ document.addEventListener("DOMContentLoaded", () => {
         `  --face-swapper-model ${swapper}${boostFlag} \\\n` +
         `  --face-enhancer-model ${enhancer} \\\n` +
         `  --face-enhancer-blend ${blend} \\\n` +
-        `  --face-detector-model ${detector} \\\n` +
+        `  --face-detector-model ${detectorCli} \\\n` +
         `  --face-selector-mode reference \\\n` +
         `  --face-selector-order left-right \\\n` +
         `  --reference-face-position ${posB} \\\n` +
