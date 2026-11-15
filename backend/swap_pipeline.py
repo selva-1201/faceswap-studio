@@ -189,7 +189,7 @@ def build_facefusion_command(
         detector_model = DEFAULT_DETECTOR_MODEL
 
     blend_clamped = max(40, min(100, int(enhancer_blend)))
-    detector_cli = "yoloface" if detector_model in ("yolo_face", "yoloface") else detector_model
+    detector_cli = "yolo_face" if detector_model in ("yolo_face", "yoloface") else detector_model
 
     cmd = get_facefusion_cmd() + [
         "headless-run",

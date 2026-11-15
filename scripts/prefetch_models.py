@@ -102,6 +102,7 @@ def main() -> None:
     essential_models = [
         "hyperswap_1c_256.onnx",
         "codeformer.onnx",
+        "yolo_face.onnx",
         "yoloface.onnx",
     ]
 

@@ -152,7 +152,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const swapper = swapperSelect.value;
     const enhancer = enhancerSelect.value;
     const detector = detectorSelect.value;
-    const detectorCli = detector === "yolo_face" ? "yoloface" : detector;
+    const detectorCli = detector === "yoloface" ? "yolo_face" : detector;
     const blend = blendSlider.value;
     const posA = posAInput.value;
     const posB = posBInput.value;

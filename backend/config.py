@@ -21,16 +21,17 @@ ALLOWED_ENHANCER_MODELS = [
 ]
 
 ALLOWED_DETECTOR_MODELS = [
-    "yoloface",
     "yolo_face",
+    "yoloface",
     "retinaface",
     "scrfd",
+    "yunet",
 ]
 
 # Default values
 DEFAULT_SWAPPER_MODEL = "hyperswap_1c_256"
 DEFAULT_ENHANCER_MODEL = "codeformer"
-DEFAULT_DETECTOR_MODEL = "yoloface"
+DEFAULT_DETECTOR_MODEL = "yolo_face"
 DEFAULT_ENHANCER_BLEND = 80
 MIN_ENHANCER_BLEND = 40
 MAX_ENHANCER_BLEND = 100
